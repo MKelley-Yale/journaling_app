@@ -1,0 +1,47 @@
+# This folder IS the git repo — `git init` here, not in the parent.
+# journal.db and photos/ now live in the PARENT folder, outside the repo entirely.
+# The rules for them stay below anyway, in case anything ever lands here again.
+#
+# NOTE: git has no trailing comments. `#` only starts a comment at the START of a
+# line — anything after a pattern becomes part of the pattern and silently breaks
+# it. Keep every comment on its own line.
+
+# --- Secrets & personal data: NEVER commit these ---
+
+# your real config / any API keys
+.env
+.env.local
+
+# ALL your journal entries + PIN hash
+journal.db
+journal.db-journal
+journal.db-wal
+journal.db-shm
+*.db
+*.sqlite
+*.sqlite3
+
+# private key that signs your push notifications
+vapid_private.pem
+vapid_keys.json
+*.pem
+
+# your uploaded photos (personal content)
+photos/
+
+# --- Environment / build noise ---
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# --- Editor / OS cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
