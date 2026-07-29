@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#16181c" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
+  <title>Journal</title>
+</head>
+<body>
+  <!-- Lock / setup overlay -->
+  <div id="lock" class="overlay hidden">
+    <div class="lock-card">
+      <h1 id="lock-title">Welcome</h1>
+      <p id="lock-sub" class="muted"></p>
+      <input id="pin-input" type="password" inputmode="numeric" autocomplete="off"
+             placeholder="PIN" maxlength="12" />
+      <button id="pin-btn" class="primary">Unlock</button>
+      <p id="lock-err" class="err"></p>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <main id="view"></main>
+    <nav id="tabs">
+      <button data-tab="today" class="tab active">Today</button>
+      <button data-tab="collections" class="tab">Collections</button>
+      <button data-tab="calendar" class="tab">Calendar</button>
+      <button data-tab="lookback" class="tab">Look Back</button>
+      <button data-tab="settings" class="tab">Settings</button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js?v=3"></script>
+</body>
+</html>
