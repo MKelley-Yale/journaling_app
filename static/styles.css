@@ -165,3 +165,31 @@ input[type=file] { color: var(--ink); font-size: 0.85rem; width: 100%; }
   background: #3a3d43; color: #fff; padding: 10px 16px; border-radius: 999px;
   font-size: 0.9rem; z-index: 60; max-width: 90%;
 }
+
+/* daily mood capture */
+.mood-card h3 { margin-bottom: 10px; }
+.mood-row {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+}
+@media (min-width: 520px) {
+  .mood-row { grid-template-columns: repeat(8, 1fr); }
+}
+.mood-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 10px 2px; cursor: pointer;
+  background: var(--input-bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.mood-btn .mood-emoji { font-size: 1.6rem; line-height: 1.1; }
+.mood-btn .mood-label { font-size: 0.68rem; color: var(--muted); }
+.mood-btn.selected {
+  background: var(--accent-soft); border-color: var(--accent);
+}
+.mood-btn.selected .mood-label { color: var(--ink); }
+
+.mood-shown {
+  display: flex; align-items: center; gap: 8px;
+  margin: 6px 0 10px; font-size: 0.9rem;
+}
+.mood-shown .mood-emoji { font-size: 1.4rem; }

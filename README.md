@@ -12,7 +12,7 @@ A private journaling app that runs on a desktop and reaches phone or laptop via 
 no company, and no third party involved. Two further differences shape how it feels to use.
 It is *prompt-driven* rather than a blank page: it actively probes with semi-random questions and brings old entries back for fresh reflection. And *privacy is the default, not a setting*: optional AI follow-ups send nothing anywhere unless an API key is deliberately added, and phone access runs over a private Tailscale network instead of the public internet.
 
-**Features at a glance.** Semi-random daily prompts (quick and reflective), themed collections for deep dives, opt-in AI "go deeper" follow-ups, resurfacing of old entries, a searchable history and a calendar, photo attachments, a 48-hour editing window, weather captured from location, push reminders, PIN lock, and a dark theme. Each is detailed below.
+**Features at a glance.** Semi-random daily prompts (quick and reflective), a one-tap mood capture on every entry, themed collections for deep dives, opt-in AI "go deeper" follow-ups, resurfacing of old entries, a searchable history and a calendar, photo attachments, a 48-hour editing window, weather captured from location, push reminders, PIN lock, and a dark theme. Each is detailed below.
 
 ---
 
@@ -21,6 +21,12 @@ It is *prompt-driven* rather than a blank page: it actively probes with semi-ran
 - **Daily collection** — semi-random prompts (half quick/factual, half reflective). Before
   noon it asks about *yesterday*; later in the day, about *today*. Buttons pull more factual
   or more reflective prompts, swap an unwanted prompt, or switch to free-writing.
+- **Mood capture** — every session and free write opens with *"What kind of day was today?"*
+  and eight one-tap options: 😄 Happy · 🥰 Loved · 😐 Flat · 😵‍💫 Complicated · 😪 Tired ·
+  😰 Anxious · 😢 Sad · 😠 Angry. These are *kinds* of day, not a good-to-bad scale, so they
+  aren't meant to be averaged. It's optional (tap the selected one again to unpick), an entry
+  can be saved with nothing but a mood, and it can be changed during the 48-hour edit window.
+  The chosen mood shows on the entry and as a leading emoji in Look Back and the Calendar.
 - **Themed collections** — self-contained question sets worked through at any pace, separate
   from the daily rhythm. Ships with **Labor & Delivery** and a reusable **Deep Dive: An Event**
   template; new collections can be created anytime.
@@ -108,6 +114,19 @@ reminders, the desktop should not sleep during the day:
 Push notifications are delivered by Apple, so they arrive even if Tailscale is off — but
 opening and using the app requires Tailscale connected on the phone.
 
+**When a reminder doesn't arrive.** Every send is recorded, so there's something to look at:
+
+- **Settings → Send test** now reports what Apple actually returned rather than a blanket
+  "Test sent". `HTTP 201` means Apple accepted it for delivery.
+- **Settings → Send history** lists the last 25 attempts, including the unattended scheduled
+  ones — timestamp, whether it was a `test` or a `reminder`, the HTTP status, and Apple's
+  error text if any. Same data at `GET /api/push/log?limit=N`, stored in the `push_log`
+  table in `journal.db`.
+
+A reminder whose `sent_at` is set in the `reminders` table only means the send was attempted;
+`push_log` is what says whether it went anywhere. `201` plus nothing on the phone points at
+delivery rather than rejection — see the TTL note under *Good to know*.
+
 ---
 
 ## Optional: smarter AI follow-ups
@@ -129,5 +148,13 @@ the follow-up — nothing else, and only on request. Restart `run.bat` after edi
   `EDIT_WINDOW_HOURS` constant near the top of the edit section in `server.py`.
 - **Push timing** is best-effort — Apple controls delivery, so notifications are generally
   reliable once enabled but not precise to the minute.
+- **Push TTL** is currently pywebpush's default of `0`, which asks Apple to deliver only if
+  the phone is reachable at that instant and to discard it otherwise. That makes a test sent
+  with the phone in hand more likely to land than a reminder fired at a random hour. Raising
+  it means passing `ttl=` to `webpush()` in `send_push` (`server.py`).
+- **Moods** are stored in `entries.mood` as a stable key (`tired`, `complicated`), not as the
+  emoji. The emoji and label live in `MOODS` at the top of `server.py` and can be reworded
+  without touching stored entries. Columns added after the first release are applied by the
+  `MIGRATIONS` list in `db.py` on startup.
 - **Unlocking** uses a PIN.
 

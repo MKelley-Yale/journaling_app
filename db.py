@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS entries (
     created_at TEXT NOT NULL,
     weather TEXT,
     location TEXT,
-    is_freewrite INTEGER NOT NULL DEFAULT 0
+    is_freewrite INTEGER NOT NULL DEFAULT 0,
+    mood TEXT              -- mood key from MOODS in server.py, or NULL if skipped
 );
 
 CREATE TABLE IF NOT EXISTS answers (
@@ -95,6 +96,22 @@ CREATE TABLE IF NOT EXISTS reminders (
     sent_at TEXT,
     engaged INTEGER NOT NULL DEFAULT 0
 );
+
+-- One row per push attempt per subscription. `status` is the HTTP status the push
+-- service (Apple) returned: 201 = accepted for delivery. NULL = the request never
+-- got a response (network/TLS/library error) -- see `error`.
+CREATE TABLE IF NOT EXISTS push_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,                   -- test | reminder
+    reminder_id INTEGER,
+    subscription_id INTEGER,
+    endpoint TEXT,
+    title TEXT,
+    body TEXT,
+    status INTEGER,
+    error TEXT
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -112,9 +129,25 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS won't add a
+# column to a table that already exists, so they're applied by hand on startup.
+MIGRATIONS = [
+    ("entries", "mood", "ALTER TABLE entries ADD COLUMN mood TEXT"),
+]
+
+
+def _migrate(conn):
+    for table, column, sql in MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(sql)
+    conn.commit()
+
+
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
+    _migrate(conn)
     # default settings
     for k, v in DEFAULT_SETTINGS.items():
         conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))

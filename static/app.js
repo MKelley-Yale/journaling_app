@@ -1,4 +1,4 @@
-const APP_VERSION = "3";  // bump with the ?v= in index.html and CACHE in sw.js
+const APP_VERSION = "6";  // bump with the ?v= in index.html and CACHE in sw.js
 
 // ---------- helpers ----------
 async function api(path, method = "GET", body = null) {
@@ -55,6 +55,54 @@ function fmtDateTime(iso) {
   return d.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
 function isMorning() { return new Date().getHours() < 12; }
+
+// ---------- mood ----------
+// The canonical list comes from the server (/api/status). These are a fallback
+// only, for the case where an old cached app.js meets a newer server.
+const MOODS_FALLBACK = [
+  { key: "happy", emoji: "😄", label: "Happy" },
+  { key: "loved", emoji: "🥰", label: "Loved" },
+  { key: "flat", emoji: "😐", label: "Flat" },
+  { key: "complicated", emoji: "😵‍💫", label: "Complicated" },
+  { key: "tired", emoji: "😪", label: "Tired" },
+  { key: "anxious", emoji: "😰", label: "Anxious" },
+  { key: "sad", emoji: "😢", label: "Sad" },
+  { key: "angry", emoji: "😠", label: "Angry" },
+];
+
+function moods() { return (STATUS && STATUS.moods) || MOODS_FALLBACK; }
+function moodQuestion() {
+  return (STATUS && STATUS.mood_question) || "What kind of day was today?";
+}
+function moodOf(key) { return moods().find((m) => m.key === key) || null; }
+function moodEmoji(key) { const m = moodOf(key); return m ? m.emoji : ""; }
+
+// A row of mood buttons. `selected` is a mood key or null.
+function moodPickerHTML(selected, idPrefix = "mood") {
+  return `<div class="mood-row" id="${idPrefix}-row">` + moods().map((m) => `
+    <button type="button" class="mood-btn${m.key === selected ? " selected" : ""}"
+            data-mood="${m.key}" aria-pressed="${m.key === selected}"
+            title="${esc(m.label)}">
+      <span class="mood-emoji">${m.emoji}</span>
+      <span class="mood-label">${esc(m.label)}</span>
+    </button>`).join("") + `</div>`;
+}
+
+// Wire a picker up. onPick receives the new key, or null when tapped to clear.
+function bindMoodPicker(rootSel, getSelected, onPick) {
+  document.querySelectorAll(`${rootSel} .mood-btn`).forEach((b) => {
+    b.onclick = () => {
+      const key = b.dataset.mood;
+      const next = getSelected() === key ? null : key;   // tap again to clear
+      onPick(next);
+      document.querySelectorAll(`${rootSel} .mood-btn`).forEach((x) => {
+        const on = x.dataset.mood === next;
+        x.classList.toggle("selected", on);
+        x.setAttribute("aria-pressed", on);
+      });
+    };
+  });
+}
 
 function getLocation() {
   return new Promise((resolve) => {
@@ -192,6 +240,7 @@ async function startSession(collectionId, morning) {
       { collection_id: collectionId, morning });
     SESSION = {
       collection_id: data.collection_id, morning: data.morning,
+      mood: null,
       items: data.prompts.map((p) => ({ ...p, answer: "" })),
     };
     renderSession();
@@ -214,8 +263,16 @@ function renderSession() {
       <div class="ai-followup hidden"></div>
     </div>`).join("");
 
+  const moodCard = `
+    <div class="card mood-card">
+      <h3>${esc(moodQuestion())}</h3>
+      ${moodPickerHTML(SESSION.mood || null, "smood")}
+      <p class="muted small-txt">Optional — tap again to unpick.</p>
+    </div>`;
+
   view().innerHTML = `
     <div class="row between"><h1>Session</h1><button class="link" id="cancel">Cancel</button></div>
+    ${moodCard}
     ${cards}
     <div class="row">
       <button class="ghost" id="more-fact">+ Factual</button>
@@ -238,6 +295,9 @@ function renderSession() {
     card.querySelector(".swap").onclick = () => swapPrompt(idx);
     card.querySelector(".deeper").onclick = () => goDeeper(idx, card);
   });
+  bindMoodPicker("#smood-row", () => SESSION.mood || null,
+                 (next) => { SESSION.mood = next; });
+
   $("#cancel").onclick = renderToday;
   $("#more-fact").onclick = () => morePrompts("factual");
   $("#more-refl").onclick = () => morePrompts("reflective");
@@ -301,12 +361,14 @@ async function saveSession() {
     .filter((i) => i.answer.trim())
     .map((i) => ({ prompt_id: i.id, question_text: i.text, kind: i.kind, answer_text: i.answer }));
   const photoFiles = SESSION.photoFiles || [];
-  if (!answers.length && !photoFiles.length) return toast("Nothing written yet");
+  if (!answers.length && !photoFiles.length && !SESSION.mood)
+    return toast("Nothing written yet");
   toast("Saving…");
   const loc = await getLocation();
   try {
     const res = await api("/api/entries", "POST", {
       collection_id: SESSION.collection_id, answers,
+      mood: SESSION.mood || null,
       lat: loc?.lat, lon: loc?.lon,
     });
     if (photoFiles.length) await uploadPhotos(res.id, photoFiles);
@@ -317,8 +379,14 @@ async function saveSession() {
 
 function renderFreewrite() {
   let photoFiles = [];
+  let mood = null;
   view().innerHTML = `
     <div class="row between"><h1>Free write</h1><button class="link" id="cancel">Cancel</button></div>
+    <div class="card mood-card">
+      <h3>${esc(moodQuestion())}</h3>
+      ${moodPickerHTML(null, "fwmood")}
+      <p class="muted small-txt">Optional — tap again to unpick.</p>
+    </div>
     <div class="card">
       <textarea id="fw" style="min-height:240px" placeholder="Whatever's on your mind…"></textarea>
     </div>
@@ -338,14 +406,17 @@ function renderFreewrite() {
     e.target.value = "";
     refreshPhotoPreview();
   };
+  bindMoodPicker("#fwmood-row", () => mood, (next) => { mood = next; });
+
   $("#cancel").onclick = renderToday;
   $("#save").onclick = async () => {
     const text = $("#fw").value.trim();
-    if (!text && !photoFiles.length) return toast("Nothing written yet");
+    if (!text && !photoFiles.length && !mood) return toast("Nothing written yet");
     const loc = await getLocation();
     try {
       const res = await api("/api/entries", "POST",
-        { is_freewrite: true, freewrite_text: text, lat: loc?.lat, lon: loc?.lon });
+        { is_freewrite: true, freewrite_text: text, mood,
+          lat: loc?.lat, lon: loc?.lon });
       if (photoFiles.length) await uploadPhotos(res.id, photoFiles);
       toast("Saved"); renderToday();
     } catch (e) { toast(e.message); }
@@ -548,7 +619,7 @@ async function showDay(dateKey) {
     }
     box.innerHTML = `<h2>${heading}</h2>` + entries.map((e) => `
       <button class="list-item" data-id="${e.id}">
-        <div class="title">${e.collection_name || "Free write"}</div>
+        <div class="title">${e.mood ? moodEmoji(e.mood) + " " : ""}${e.collection_name || "Free write"}</div>
         <div class="sub">${esc((e.preview || "").slice(0, 90))}${(e.preview || "").length > 90 ? "…" : ""}</div>
         <div class="sub">${e.answer_count} ${e.answer_count === 1 ? "answer" : "answers"}${e.photo_count ? ` · ${e.photo_count} 📷` : ""}${e.weather ? " · " + esc(e.weather) : ""}</div>
       </button>`).join("");
@@ -576,7 +647,7 @@ async function renderResults(q) {
   if (!entries.length) { r.innerHTML = `<p class="muted">No entries yet.</p>`; return; }
   r.innerHTML = entries.map((e) => `
     <button class="list-item" data-id="${e.id}">
-      <div class="title">${fmtDate(e.created_at)}</div>
+      <div class="title">${e.mood ? moodEmoji(e.mood) + " " : ""}${fmtDate(e.created_at)}</div>
       <div class="sub">${esc((e.preview || "").slice(0, 90))}${(e.preview || "").length > 90 ? "…" : ""}</div>
       <div class="sub">${e.collection_name || "Free write"} · ${e.answer_count} ${e.answer_count === 1 ? "answer" : "answers"}${e.photo_count ? ` · ${e.photo_count} 📷` : ""}${e.weather ? " · " + esc(e.weather) : ""}</div>
     </button>`).join("");
@@ -626,6 +697,8 @@ async function openEntry(id, opts = {}) {
   view().innerHTML = `
     <div class="row between"><h1>${fmtDate(e.created_at)}</h1><button class="link" id="back">Back</button></div>
     <div class="entry-meta">${e.collection_name || "Free write"}${e.weather ? " · " + esc(e.weather) : ""} · ${fmtDateTime(e.created_at)}</div>
+    ${e.mood ? `<div class="mood-shown"><span class="mood-emoji">${moodEmoji(e.mood)}</span>
+        <span class="muted">${esc(moodQuestion())} ${esc((moodOf(e.mood) || {}).label || e.mood)}</span></div>` : ""}
     ${editable ? `<div class="row between edit-bar">
         <span class="muted small-txt">${fmtTimeLeft(data.edit_seconds_left)}</span>
         <button class="ghost small" id="edit">Edit</button>
@@ -663,6 +736,7 @@ function editEntry(id, data, opts = {}) {
   const e = data.entry;
   const photos = data.photos || [];
   let newPhotos = [];
+  let mood = e.mood || null;
 
   const fields = data.answers.map((a) => `
     <div class="card" data-aid="${a.id}">
@@ -680,6 +754,11 @@ function editEntry(id, data, opts = {}) {
   view().innerHTML = `
     <div class="row between"><h1>Edit entry</h1><button class="link" id="cancel">Cancel</button></div>
     <div class="entry-meta">${fmtDate(e.created_at)} · ${fmtTimeLeft(data.edit_seconds_left)}</div>
+    <div class="card mood-card">
+      <h3>${esc(moodQuestion())}</h3>
+      ${moodPickerHTML(mood, "emood")}
+      <p class="muted small-txt">Optional — tap again to unpick.</p>
+    </div>
     ${fields || '<p class="muted">This entry has no answers.</p>'}
     <div class="card">
       <h3>Photos</h3>
@@ -695,6 +774,8 @@ function editEntry(id, data, opts = {}) {
     <div class="spacer"></div>`;
 
   $("#cancel").onclick = () => openEntry(id, opts);
+
+  bindMoodPicker("#emood-row", () => mood, (next) => { mood = next; });
 
   const refreshNew = () =>
     renderPhotoChips($("#newphoto-preview"), newPhotos, (i) => {
@@ -723,7 +804,7 @@ function editEntry(id, data, opts = {}) {
       answer_text: c.querySelector(".edit-a").value,
     }));
     try {
-      await api("/api/entries/" + id, "PUT", { answers });
+      await api("/api/entries/" + id, "PUT", { answers, mood });
       if (newPhotos.length) await uploadPhotos(id, newPhotos);
       toast("Changes saved");
       openEntry(id, opts);
@@ -766,8 +847,10 @@ async function renderSettings() {
       <div class="row">
         <button class="ghost" id="enable">Enable reminders on this device</button>
         <button class="ghost" id="test">Send test</button>
+        <button class="ghost" id="pushlog">Send history</button>
       </div>
       <p class="muted" id="nextrem"></p>
+      <div id="pushresult" class="muted small-txt"></div>
     </div>
     <div class="card">
       <h3>Account</h3>
@@ -788,7 +871,41 @@ async function renderSettings() {
     toast("Saved"); loadNext();
   };
   $("#enable").onclick = enablePush;
-  $("#test").onclick = async () => { await api("/api/push/test", "POST"); toast("Test sent"); };
+  $("#test").onclick = async () => {
+    const out = $("#pushresult");
+    out.innerHTML = "Sending…";
+    try {
+      const res = await api("/api/push/test", "POST");
+      const rs = res.results || [];
+      if (!rs.length) {
+        out.innerHTML = "<b>No subscription registered on any device.</b> " +
+          "Tap “Enable reminders on this device” first.";
+        toast("No subscriptions"); return;
+      }
+      out.innerHTML = rs.map((r) =>
+        `<div>${r.status === null ? "no response" : "HTTP " + r.status}` +
+        `${r.status === 201 ? " — accepted by Apple" : ""}` +
+        `${r.error ? " — " + esc(r.error) : ""}</div>`).join("");
+      toast(res.ok ? "Accepted by Apple" : "Push rejected — see details");
+    } catch (e) {
+      out.textContent = e.message;
+      toast(e.message);
+    }
+  };
+  $("#pushlog").onclick = async () => {
+    const out = $("#pushresult");
+    out.innerHTML = "Loading…";
+    try {
+      const { log } = await api("/api/push/log?limit=25");
+      if (!log.length) { out.innerHTML = "No push attempts recorded yet."; return; }
+      out.innerHTML = log.map((r) =>
+        `<div>${fmtDate(r.created_at)} · ${esc(r.source)}` +
+        ` · ${r.status === null ? "no response" : "HTTP " + r.status}` +
+        `${r.error ? " · " + esc(r.error) : ""}</div>`).join("");
+    } catch (e) {
+      out.textContent = e.message;
+    }
+  };
   $("#logout").onclick = async () => { await api("/api/logout", "POST"); showLock(); };
   $("#forceupdate").onclick = forceUpdate;
   loadNext();

@@ -60,6 +60,31 @@ VAPID_CONTACT = os.environ.get("VAPID_CONTACT", "mailto:you@example.com")
 
 app = FastAPI(title="Journal")
 
+# --- daily mood capture ------------------------------------------------------
+# Kinds of day, not a good-to-bad scale — deliberately unordered, so don't
+# average them. `key` is what's stored in entries.mood; the emoji and label are
+# presentation and can be changed without touching stored data.
+MOODS = [
+    {"key": "happy",   "emoji": "😄", "label": "Happy"},
+    {"key": "loved",   "emoji": "🥰", "label": "Loved"},
+    {"key": "flat",    "emoji": "😐", "label": "Flat"},
+    {"key": "complicated", "emoji": "😵‍💫", "label": "Complicated"},
+    {"key": "tired",   "emoji": "😪", "label": "Tired"},
+    {"key": "anxious", "emoji": "😰", "label": "Anxious"},
+    {"key": "sad",     "emoji": "😢", "label": "Sad"},
+    {"key": "angry",   "emoji": "😠", "label": "Angry"},
+]
+MOOD_KEYS = {m["key"] for m in MOODS}
+MOOD_QUESTION = "What kind of day was today?"
+
+
+def clean_mood(value):
+    """Return a valid mood key, or None. Unknown values are dropped, not stored."""
+    if value is None:
+        return None
+    v = str(value).strip().lower()
+    return v if v in MOOD_KEYS else None
+
 
 # --- auth helpers -----------------------------------------------------------
 def hash_pin(pin: str) -> str:
@@ -171,27 +196,71 @@ async def ai_followup(question_text: str, answer_text: str) -> str:
 
 
 # --- push -------------------------------------------------------------------
-def send_push(title, body):
+def _log_push(conn, source, reminder_id, sub_id, endpoint, title, body, status, error):
+    try:
+        conn.execute(
+            "INSERT INTO push_log(created_at, source, reminder_id, subscription_id, "
+            "endpoint, title, body, status, error) VALUES (?,?,?,?,?,?,?,?,?)",
+            (now_iso(), source, reminder_id, sub_id, endpoint, title, body, status, error))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def send_push(title, body, source="reminder", reminder_id=None):
+    """Send `body` to every registered subscription.
+
+    Returns a list of per-subscription results, each:
+        {"subscription_id", "endpoint", "status", "error"}
+
+    `status` is the HTTP status the push service returned. For Apple, 201 means
+    *accepted for delivery* — not proof it reached the phone. `status` is None
+    when no response came back at all (network/TLS/library failure); `error`
+    then holds the exception. Every attempt is also written to push_log, so
+    unattended reminder sends leave a trace.
+    """
     from pywebpush import webpush, WebPushException
     conn = get_conn()
     subs = conn.execute("SELECT * FROM push_subscriptions").fetchall()
     payload = json.dumps({"title": title, "body": body, "url": "/"})
+    results = []
+
+    if not subs:
+        _log_push(conn, source, reminder_id, None, None, title, body, None,
+                  "no push subscriptions registered")
+
     for s in subs:
+        status, error = None, None
         try:
-            webpush(
+            resp = webpush(
                 subscription_info=json.loads(s["data"]),
                 data=payload,
                 vapid_private_key=VAPID_PRIVATE_PEM,
                 vapid_claims={"sub": VAPID_CONTACT},
             )
+            status = getattr(resp, "status_code", None)
+            if status is not None and status >= 400:
+                error = (getattr(resp, "text", "") or "")[:500]
         except WebPushException as e:
+            if e.response is not None:
+                status = e.response.status_code
+                error = ((getattr(e.response, "text", "") or "").strip() or str(e))[:500]
+            else:
+                error = str(e)[:500]
             # 404/410 -> subscription gone; remove it
-            if e.response is not None and e.response.status_code in (404, 410):
+            if status in (404, 410):
                 conn.execute("DELETE FROM push_subscriptions WHERE id=?", (s["id"],))
                 conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            error = repr(e)[:500]
+
+        results.append({"subscription_id": s["id"], "endpoint": s["endpoint"],
+                        "status": status, "error": error})
+        _log_push(conn, source, reminder_id, s["id"], s["endpoint"],
+                  title, body, status, error)
+
     conn.close()
+    return results
 
 
 # --- reminder scheduling ----------------------------------------------------
@@ -258,7 +327,7 @@ def tick():
             morning = now.hour < _isetting("morning_cutoff_hour")
             body = ("A few minutes for yesterday?" if morning
                     else "Time to journal — a few minutes for today?")
-            send_push("Journal", body)
+            send_push("Journal", body, source="reminder", reminder_id=r["id"])
             conn.execute("UPDATE reminders SET sent_at=? WHERE id=?", (now_iso(), r["id"]))
             conn.commit()
             if r["kind"] == "primary":
@@ -326,7 +395,8 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 @app.get("/api/status")
 def status(request: Request):
     return {"has_pin": bool(db.get_setting("pin_hash")), "authed": is_authed(request),
-            "vapid_public": VAPID_PUBLIC}
+            "vapid_public": VAPID_PUBLIC,
+            "moods": MOODS, "mood_question": MOOD_QUESTION}
 
 
 @app.post("/api/setup-pin")
@@ -528,13 +598,14 @@ async def create_entry(request: Request, _=Depends(require_auth)):
     location = body.get("location")
     answers = body.get("answers", [])
     freewrite_text = (body.get("freewrite_text") or "").strip()
+    mood = clean_mood(body.get("mood"))
 
     weather = await fetch_weather(lat, lon) if (lat is not None and lon is not None) else None
 
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO entries(collection_id, created_at, weather, location, is_freewrite) "
-        "VALUES (?, ?, ?, ?, ?)", (cid, now_iso(), weather, location, is_freewrite))
+        "INSERT INTO entries(collection_id, created_at, weather, location, is_freewrite, mood) "
+        "VALUES (?, ?, ?, ?, ?, ?)", (cid, now_iso(), weather, location, is_freewrite, mood))
     eid = cur.lastrowid
     if is_freewrite and freewrite_text:
         conn.execute("INSERT INTO answers(entry_id, prompt_id, question_text, kind, answer_text, created_at) "
@@ -557,7 +628,7 @@ async def create_entry(request: Request, _=Depends(require_auth)):
 def list_entries(request: Request, q: str = "", collection_id: int = 0, date: str = "",
                  _=Depends(require_auth)):
     conn = get_conn()
-    sql = ("SELECT e.id, e.created_at, e.weather, e.collection_id, e.is_freewrite, "
+    sql = ("SELECT e.id, e.created_at, e.weather, e.collection_id, e.is_freewrite, e.mood, "
            "c.name AS collection_name, "
            "(SELECT COUNT(*) FROM answers a WHERE a.entry_id=e.id) AS answer_count, "
            "(SELECT COUNT(*) FROM photos p WHERE p.entry_id=e.id) AS photo_count, "
@@ -693,6 +764,9 @@ async def update_entry(eid: int, request: Request, _=Depends(require_auth)):
     body = await request.json()
     conn = get_conn()
     require_editable(conn, eid)
+    if "mood" in body:
+        # explicit null clears it; an unrecognised key also clears rather than storing junk
+        conn.execute("UPDATE entries SET mood=? WHERE id=?", (clean_mood(body.get("mood")), eid))
     for a in body.get("answers", []):
         aid = a.get("id")
         if aid is None:
@@ -863,8 +937,23 @@ async def push_subscribe(request: Request, _=Depends(require_auth)):
 
 @app.post("/api/push/test")
 def push_test(_=Depends(require_auth)):
-    send_push("Journal", "This is a test reminder — tap to open.")
-    return {"ok": True}
+    results = send_push("Journal", "This is a test reminder — tap to open.",
+                        source="test")
+    ok = bool(results) and all(
+        r["status"] is not None and 200 <= r["status"] < 400 for r in results)
+    return {"ok": ok, "results": results}
+
+
+@app.get("/api/push/log")
+def push_log(limit: int = 50, _=Depends(require_auth)):
+    """Recent push attempts, newest first — including ones nobody was watching."""
+    limit = max(1, min(limit, 500))
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, created_at, source, reminder_id, subscription_id, status, error, body "
+        "FROM push_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return {"log": [dict(r) for r in rows]}
 
 
 # ---- settings ----

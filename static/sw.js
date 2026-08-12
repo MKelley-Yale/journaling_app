@@ -1,9 +1,9 @@
 // Bump this whenever app.js / styles.css change, and bump the ?v= in index.html to match.
-const CACHE = "journal-v3";
+const CACHE = "journal-v6";
 const SHELL = [
   "/",
-  "/static/app.js?v=3",
-  "/static/styles.css?v=3",
+  "/static/app.js?v=6",
+  "/static/styles.css?v=6",
   "/manifest.webmanifest",
   "/static/icons/icon-192.png",
 ];
